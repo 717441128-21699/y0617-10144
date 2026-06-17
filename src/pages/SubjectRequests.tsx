@@ -10,7 +10,9 @@ export default function SubjectRequests() {
   const [typeFilter, setTypeFilter] = useState('all')
   const [showCreate, setShowCreate] = useState(false)
   const [showAssign, setShowAssign] = useState<number | null>(null)
+  const [showComplete, setShowComplete] = useState<number | null>(null)
   const [teamInput, setTeamInput] = useState('')
+  const [resultInput, setResultInput] = useState('')
   const [expandedId, setExpandedId] = useState<number | null>(null)
   const [form, setForm] = useState({ request_type: 'access' as 'access' | 'deletion' | 'export', subject_name: '', subject_email: '', description: '' })
 
@@ -33,9 +35,21 @@ export default function SubjectRequests() {
   const handleAssign = async (id: number) => {
     if (teamInput.trim()) {
       await assignTeam(id, teamInput.trim())
+      if (expandedId === id) {
+        fetchRequestTimeline(id)
+      }
       setShowAssign(null)
       setTeamInput('')
     }
+  }
+
+  const handleComplete = async (id: number) => {
+    await completeRequest(id, resultInput.trim())
+    if (expandedId === id) {
+      fetchRequestTimeline(id)
+    }
+    setShowComplete(null)
+    setResultInput('')
   }
 
   const handleExpand = (id: number) => {
@@ -112,18 +126,38 @@ export default function SubjectRequests() {
                       <UserCheck size={14} />分配团队
                     </button>
                   )}
-                  {(req.status === 'assigned' || req.status === 'processing') && (
-                    <button onClick={(e) => { e.stopPropagation(); completeRequest(req.id) }} className="flex items-center gap-1 px-3 py-1.5 bg-accent-100 text-accent-700 rounded-lg text-sm font-medium hover:bg-accent-200">
+                  {(req.status === 'assigned' || req.status === 'processing' || req.status === 'overdue') && (
+                    <button onClick={(e) => { e.stopPropagation(); setShowComplete(req.id); setResultInput('') }} className="flex items-center gap-1 px-3 py-1.5 bg-accent-100 text-accent-700 rounded-lg text-sm font-medium hover:bg-accent-200">
                       <CheckCircle size={14} />完成处理
                     </button>
                   )}
                 </div>
 
                 {showAssign === req.id && (
-                  <div className="flex items-center gap-2 mb-3">
-                    <input value={teamInput} onChange={(e) => setTeamInput(e.target.value)} placeholder="输入团队名称" className="px-3 py-1.5 border rounded-lg text-sm focus:ring-2 focus:ring-primary-300 focus:outline-none" />
-                    <button onClick={() => handleAssign(req.id)} className="px-3 py-1.5 bg-primary-800 text-white rounded-lg text-sm hover:bg-primary-700">确认</button>
-                    <button onClick={() => { setShowAssign(null); setTeamInput('') }} className="px-3 py-1.5 border rounded-lg text-sm hover:bg-gray-100">取消</button>
+                  <div className="bg-white rounded-lg p-4 mb-3 border border-gray-200">
+                    <label className="block text-sm font-medium text-gray-700 mb-2">分配处理团队</label>
+                    <div className="flex items-center gap-2">
+                      <input value={teamInput} onChange={(e) => setTeamInput(e.target.value)} placeholder="输入团队名称" className="flex-1 px-3 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-primary-300 focus:outline-none" />
+                      <button onClick={() => handleAssign(req.id)} className="px-4 py-2 bg-primary-800 text-white rounded-lg text-sm hover:bg-primary-700">确认</button>
+                      <button onClick={() => { setShowAssign(null); setTeamInput('') }} className="px-4 py-2 border rounded-lg text-sm hover:bg-gray-100">取消</button>
+                    </div>
+                  </div>
+                )}
+
+                {showComplete === req.id && (
+                  <div className="bg-white rounded-lg p-4 mb-3 border border-gray-200">
+                    <label className="block text-sm font-medium text-gray-700 mb-2">处理结果说明</label>
+                    <textarea
+                      value={resultInput}
+                      onChange={(e) => setResultInput(e.target.value)}
+                      placeholder={`请填写${typeLabel(req.request_type)}请求的处理结果，如：已提供数据副本 / 已删除全部相关数据 / 已导出可携格式数据...`}
+                      rows={3}
+                      className="w-full px-3 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-primary-300 focus:outline-none resize-none mb-3"
+                    />
+                    <div className="flex items-center gap-2">
+                      <button onClick={() => handleComplete(req.id)} className="px-4 py-2 bg-accent-600 text-white rounded-lg text-sm hover:bg-accent-700">确认完成</button>
+                      <button onClick={() => { setShowComplete(null); setResultInput('') }} className="px-4 py-2 border rounded-lg text-sm hover:bg-gray-100">取消</button>
+                    </div>
                   </div>
                 )}
 
@@ -133,11 +167,13 @@ export default function SubjectRequests() {
                 ) : (
                   <div className="space-y-2">
                     {requestTimelines.map((t) => (
-                      <div key={t.id} className="flex items-center gap-3 text-sm">
-                        <div className="w-2 h-2 rounded-full bg-primary-400" />
-                        <span className="text-gray-600">{t.action}</span>
-                        <span className="text-gray-400">- {t.performed_by}</span>
-                        <span className="text-gray-400 text-xs">{new Date(t.performed_at).toLocaleString('zh-CN')}</span>
+                      <div key={t.id} className="flex items-start gap-3 text-sm">
+                        <div className="w-2 h-2 rounded-full bg-primary-400 mt-1.5 shrink-0" />
+                        <div className="flex-1">
+                          <span className="text-gray-600">{t.action}</span>
+                          <span className="text-gray-400 ml-2">- {t.performed_by}</span>
+                        </div>
+                        <span className="text-gray-400 text-xs whitespace-nowrap">{new Date(t.performed_at).toLocaleString('zh-CN')}</span>
                       </div>
                     ))}
                   </div>

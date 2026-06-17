@@ -10,7 +10,7 @@ export default function Consent() {
   const {
     consentVersions, consentRecords, withdrawalTasks, dataAssets,
     fetchConsentVersions, fetchConsentRecords, fetchWithdrawalTasks, fetchDataAssets,
-    createConsentVersion, withdrawConsent, updateWithdrawalTask,
+    createConsentVersion, createConsentRecord, withdrawConsent, updateWithdrawalTask,
   } = useAppStore()
 
   useEffect(() => {
@@ -41,7 +41,7 @@ export default function Consent() {
       </div>
 
       {activeTab === 'versions' && <VersionsTab versions={consentVersions} onCreate={createConsentVersion} />}
-      {activeTab === 'records' && <RecordsTab records={consentRecords} versions={consentVersions} onWithdraw={withdrawConsent} />}
+      {activeTab === 'records' && <RecordsTab records={consentRecords} versions={consentVersions} onCreate={createConsentRecord} onWithdraw={withdrawConsent} />}
       {activeTab === 'withdrawals' && <WithdrawalsTab tasks={withdrawalTasks} assets={dataAssets} onUpdate={updateWithdrawalTask} />}
     </div>
   )
@@ -118,52 +118,126 @@ function VersionsTab({ versions, onCreate }: { versions: ConsentVersion[]; onCre
   )
 }
 
-function RecordsTab({ records, versions, onWithdraw }: { records: ConsentRecord[]; versions: ConsentVersion[]; onWithdraw: (id: number) => Promise<void> }) {
+function RecordsTab({ records, versions, onCreate, onWithdraw }: { records: ConsentRecord[]; versions: ConsentVersion[]; onCreate: (d: { consent_version_id: number; subject_name: string; subject_email: string }) => Promise<void>; onWithdraw: (id: number) => Promise<void> }) {
+  const [showModal, setShowModal] = useState(false)
+  const currentVersion = versions.find((v) => v.is_current)
+  const [form, setForm] = useState({ consent_version_id: 0, subject_name: '', subject_email: '' })
+
   const getVersionLabel = (versionId: number) => {
     const v = versions.find((v) => v.id === versionId)
     return v ? `v${v.version}` : `#${versionId}`
   }
 
+  const isWithdrawn = (r: ConsentRecord) => {
+    return !!r.withdrawn_at
+  }
+
+  const handleCreate = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!form.consent_version_id) return
+    await onCreate({ consent_version_id: form.consent_version_id, subject_name: form.subject_name, subject_email: form.subject_email })
+    setShowModal(false)
+    setForm({ consent_version_id: 0, subject_name: '', subject_email: '' })
+  }
+
+  const openCreateModal = () => {
+    setForm({
+      consent_version_id: currentVersion?.id || 0,
+      subject_name: '',
+      subject_email: '',
+    })
+    setShowModal(true)
+  }
+
   return (
-    <div className="bg-white rounded-xl card-shadow-md overflow-hidden">
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="bg-gray-50 border-b border-gray-200">
-              <th className="px-4 py-3 text-left font-medium text-gray-600">主体名称</th>
-              <th className="px-4 py-3 text-left font-medium text-gray-600">邮箱</th>
-              <th className="px-4 py-3 text-left font-medium text-gray-600">版本</th>
-              <th className="px-4 py-3 text-left font-medium text-gray-600">状态</th>
-              <th className="px-4 py-3 text-left font-medium text-gray-600">同意时间</th>
-              <th className="px-4 py-3 text-left font-medium text-gray-600">撤回时间</th>
-              <th className="px-4 py-3 text-left font-medium text-gray-600">操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            {records.map((r) => (
-              <tr key={r.id} className="border-b border-gray-100 hover:bg-gray-50">
-                <td className="px-4 py-3 font-medium text-gray-800">{r.subject_name}</td>
-                <td className="px-4 py-3 text-gray-600">{r.subject_email}</td>
-                <td className="px-4 py-3 text-gray-600">{getVersionLabel(r.consent_version_id)}</td>
-                <td className="px-4 py-3">
-                  <StatusBadge label={r.is_granted ? '已同意' : '已撤回'} variant={r.is_granted ? 'success' : 'danger'} />
-                </td>
-                <td className="px-4 py-3 text-gray-600">{new Date(r.granted_at).toLocaleDateString('zh-CN')}</td>
-                <td className="px-4 py-3 text-gray-600">{r.withdrawn_at ? new Date(r.withdrawn_at).toLocaleDateString('zh-CN') : '-'}</td>
-                <td className="px-4 py-3">
-                  {r.is_granted && (
-                    <button onClick={() => onWithdraw(r.id)} className="text-critical-500 hover:text-critical-700 text-sm font-medium">撤回</button>
-                  )}
-                </td>
-              </tr>
-            ))}
-            {records.length === 0 && (
-              <tr><td colSpan={7} className="px-4 py-8 text-center text-gray-400">暂无同意记录</td></tr>
-            )}
-          </tbody>
-        </table>
+    <>
+      <div className="flex justify-end">
+        <button onClick={openCreateModal} className="flex items-center gap-2 px-4 py-2.5 bg-primary-800 text-white rounded-lg hover:bg-primary-700 text-sm font-medium">
+          <Plus size={18} />新增同意记录
+        </button>
       </div>
-    </div>
+
+      <div className="bg-white rounded-xl card-shadow-md overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-gray-50 border-b border-gray-200">
+                <th className="px-4 py-3 text-left font-medium text-gray-600">主体名称</th>
+                <th className="px-4 py-3 text-left font-medium text-gray-600">邮箱</th>
+                <th className="px-4 py-3 text-left font-medium text-gray-600">版本</th>
+                <th className="px-4 py-3 text-left font-medium text-gray-600">状态</th>
+                <th className="px-4 py-3 text-left font-medium text-gray-600">同意时间</th>
+                <th className="px-4 py-3 text-left font-medium text-gray-600">撤回时间</th>
+                <th className="px-4 py-3 text-left font-medium text-gray-600">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              {records.map((r) => (
+                <tr key={r.id} className="border-b border-gray-100 hover:bg-gray-50">
+                  <td className="px-4 py-3 font-medium text-gray-800">{r.subject_name}</td>
+                  <td className="px-4 py-3 text-gray-600">{r.subject_email}</td>
+                  <td className="px-4 py-3 text-gray-600">{r.consent_version ? `v${r.consent_version}` : getVersionLabel(r.consent_version_id)}</td>
+                  <td className="px-4 py-3">
+                    <StatusBadge label={isWithdrawn(r) ? '已撤回' : '已同意'} variant={isWithdrawn(r) ? 'danger' : 'success'} />
+                  </td>
+                  <td className="px-4 py-3 text-gray-600">{new Date(r.granted_at).toLocaleString('zh-CN')}</td>
+                  <td className="px-4 py-3 text-gray-600">{r.withdrawn_at ? new Date(r.withdrawn_at).toLocaleString('zh-CN') : '-'}</td>
+                  <td className="px-4 py-3">
+                    {!isWithdrawn(r) && (
+                      <button onClick={() => onWithdraw(r.id)} className="text-critical-500 hover:text-critical-700 text-sm font-medium">撤回</button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+              {records.length === 0 && (
+                <tr><td colSpan={7} className="px-4 py-8 text-center text-gray-400">暂无同意记录</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {showModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl w-full max-w-lg">
+            <div className="flex items-center justify-between px-6 py-4 border-b">
+              <h3 className="font-heading text-lg font-semibold text-primary-800">新增同意记录</h3>
+              <button onClick={() => setShowModal(false)} className="p-1 hover:bg-gray-100 rounded"><X size={20} /></button>
+            </div>
+            <form onSubmit={handleCreate} className="p-6 space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">隐私政策版本</label>
+                <select
+                  value={form.consent_version_id}
+                  onChange={(e) => setForm({ ...form, consent_version_id: Number(e.target.value) })}
+                  required
+                  className="w-full px-3 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-primary-300 focus:outline-none"
+                >
+                  <option value={0} disabled>请选择版本</option>
+                  {versions.map((v) => (
+                    <option key={v.id} value={v.id}>
+                      v{v.version}{v.is_current ? '（当前版本）' : ''} - {new Date(v.effective_date).toLocaleDateString('zh-CN')}生效
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">主体姓名</label>
+                <input type="text" value={form.subject_name} onChange={(e) => setForm({ ...form, subject_name: e.target.value })} required className="w-full px-3 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-primary-300 focus:outline-none" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">主体邮箱</label>
+                <input type="email" value={form.subject_email} onChange={(e) => setForm({ ...form, subject_email: e.target.value })} required className="w-full px-3 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-primary-300 focus:outline-none" />
+              </div>
+              <div className="flex justify-end gap-3 pt-2">
+                <button type="button" onClick={() => setShowModal(false)} className="px-4 py-2 border border-gray-300 rounded-lg text-sm text-gray-700 hover:bg-gray-50">取消</button>
+                <button type="submit" className="px-4 py-2 bg-primary-800 text-white rounded-lg text-sm hover:bg-primary-700">保存</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </>
   )
 }
 

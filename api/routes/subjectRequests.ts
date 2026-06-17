@@ -106,6 +106,32 @@ router.post('/:id/assign', (req: Request, res: Response) => {
   res.json({ success: true, data: row })
 })
 
+router.post('/:id/complete', (req: Request, res: Response) => {
+  const id = Number(req.params.id)
+  const existing = db.prepare('SELECT * FROM subject_requests WHERE id = ?').get(id) as any
+  if (!existing) {
+    res.status(404).json({ success: false, error: '请求不存在' })
+    return
+  }
+  const { result } = req.body as { result?: string }
+  const now = new Date().toISOString()
+  db.prepare('UPDATE subject_requests SET status = ?, completed_at = ? WHERE id = ?')
+    .run('completed', now, id)
+
+  const typeLabels: Record<string, string> = { access: '访问', deletion: '删除', export: '导出' }
+  const typeLabel = typeLabels[existing.request_type] || existing.request_type
+  const actionText = result
+    ? `完成${typeLabel}请求，处理结论：${result}`
+    : `完成${typeLabel}请求`
+
+  db.prepare(
+    `INSERT INTO request_timeline (subject_request_id, action, performed_by, performed_at) VALUES (?, ?, ?, ?)`
+  ).run(id, actionText, existing.assigned_team || '系统管理员', now)
+
+  const row = db.prepare('SELECT * FROM subject_requests WHERE id = ?').get(id)
+  res.json({ success: true, data: row })
+})
+
 router.get('/:id/timeline', (req: Request, res: Response) => {
   const id = Number(req.params.id)
   const existing = db.prepare('SELECT * FROM subject_requests WHERE id = ?').get(id)

@@ -29,6 +29,7 @@ export interface ConsentRecord {
   is_granted: boolean
   granted_at: string
   withdrawn_at: string | null
+  consent_version?: string
 }
 
 export interface WithdrawalTask {
@@ -117,6 +118,7 @@ interface AppState {
   createConsentVersion: (data: Omit<ConsentVersion, 'id' | 'created_at'>) => Promise<void>
 
   fetchConsentRecords: () => Promise<void>
+  createConsentRecord: (data: { consent_version_id: number; subject_name: string; subject_email: string }) => Promise<void>
   withdrawConsent: (id: number) => Promise<void>
 
   fetchWithdrawalTasks: () => Promise<void>
@@ -126,7 +128,7 @@ interface AppState {
   createSubjectRequest: (data: Omit<SubjectRequest, 'id' | 'created_at' | 'completed_at'>) => Promise<void>
   updateSubjectRequest: (id: number, data: Partial<SubjectRequest>) => Promise<void>
   assignTeam: (id: number, team: string) => Promise<void>
-  completeRequest: (id: number) => Promise<void>
+  completeRequest: (id: number, result: string) => Promise<void>
 
   fetchRequestTimeline: (requestId: number) => Promise<void>
 
@@ -212,6 +214,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
+  createConsentRecord: async (data) => {
+    await apiFetch('/api/consent/records', { method: 'POST', body: JSON.stringify(data) })
+    await get().fetchConsentRecords()
+  },
+
   withdrawConsent: async (id) => {
     await apiFetch(`/api/consent/records/${id}/withdraw`, { method: 'POST' })
     await get().fetchConsentRecords()
@@ -254,12 +261,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   assignTeam: async (id, team) => {
-    await apiFetch(`/api/subject-requests/${id}/assign`, { method: 'POST', body: JSON.stringify({ assigned_team: team }) })
+    await apiFetch(`/api/subject-requests/${id}/assign`, { method: 'POST', body: JSON.stringify({ team }) })
     await get().fetchSubjectRequests()
   },
 
-  completeRequest: async (id) => {
-    await apiFetch(`/api/subject-requests/${id}`, { method: 'PUT', body: JSON.stringify({ status: 'completed', completed_at: new Date().toISOString() }) })
+  completeRequest: async (id, result) => {
+    await apiFetch(`/api/subject-requests/${id}/complete`, { method: 'POST', body: JSON.stringify({ result }) })
     await get().fetchSubjectRequests()
   },
 
