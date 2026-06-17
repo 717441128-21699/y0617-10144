@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react'
-import { Plus, X, ChevronDown, ChevronUp, UserCheck, CheckCircle } from 'lucide-react'
+import { Plus, X, ChevronDown, ChevronUp, UserCheck, CheckCircle, Play, AlertTriangle } from 'lucide-react'
 import { useAppStore } from '@/stores/appStore'
 import StatusBadge from '@/components/StatusBadge'
 import CountdownTimer from '@/components/CountdownTimer'
 
 export default function SubjectRequests() {
-  const { subjectRequests, fetchSubjectRequests, createSubjectRequest, assignTeam, completeRequest, fetchRequestTimeline, requestTimelines } = useAppStore()
+  const { subjectRequests, fetchSubjectRequests, createSubjectRequest, assignTeam, startProcessing, completeRequest, fetchRequestTimeline, requestTimelines } = useAppStore()
   const [statusFilter, setStatusFilter] = useState('all')
   const [typeFilter, setTypeFilter] = useState('all')
   const [showCreate, setShowCreate] = useState(false)
@@ -13,6 +13,7 @@ export default function SubjectRequests() {
   const [showComplete, setShowComplete] = useState<number | null>(null)
   const [teamInput, setTeamInput] = useState('')
   const [resultInput, setResultInput] = useState('')
+  const [resultError, setResultError] = useState('')
   const [expandedId, setExpandedId] = useState<number | null>(null)
   const [form, setForm] = useState({ request_type: 'access' as 'access' | 'deletion' | 'export', subject_name: '', subject_email: '', description: '' })
 
@@ -43,7 +44,19 @@ export default function SubjectRequests() {
     }
   }
 
+  const handleStartProcessing = async (id: number) => {
+    await startProcessing(id)
+    if (expandedId === id) {
+      fetchRequestTimeline(id)
+    }
+  }
+
   const handleComplete = async (id: number) => {
+    if (!resultInput.trim()) {
+      setResultError('请填写处理结论')
+      return
+    }
+    setResultError('')
     await completeRequest(id, resultInput.trim())
     if (expandedId === id) {
       fetchRequestTimeline(id)
@@ -59,6 +72,12 @@ export default function SubjectRequests() {
       setExpandedId(id)
       fetchRequestTimeline(id)
     }
+  }
+
+  const openCompleteModal = (id: number) => {
+    setResultInput('')
+    setResultError('')
+    setShowComplete(id)
   }
 
   const typeLabel = (t: string) => ({ access: '访问', deletion: '删除', export: '导出' }[t] || t)
@@ -107,6 +126,11 @@ export default function SubjectRequests() {
                     <span className="font-medium text-gray-800">{req.subject_name}</span>
                     <span className="text-sm text-gray-500 ml-2">{req.subject_email}</span>
                   </div>
+                  {req.was_overdue && (
+                    <span className="inline-flex items-center gap-1 text-xs text-critical-600 bg-critical-50 px-2 py-0.5 rounded-full border border-critical-200">
+                      <AlertTriangle size={12} />曾逾期
+                    </span>
+                  )}
                 </div>
                 <div className="flex items-center gap-3 flex-wrap">
                   <StatusBadge label={statusLabel(req.status)} variant={statusVariant(req.status)} />
@@ -120,14 +144,24 @@ export default function SubjectRequests() {
 
             {expandedId === req.id && (
               <div className="border-t border-gray-100 px-5 py-4 bg-gray-50">
-                <div className="flex items-center gap-3 mb-3">
+                <div className="flex items-center gap-3 mb-3 flex-wrap">
                   {req.status === 'pending' && (
                     <button onClick={(e) => { e.stopPropagation(); setShowAssign(req.id) }} className="flex items-center gap-1 px-3 py-1.5 bg-primary-100 text-primary-700 rounded-lg text-sm font-medium hover:bg-primary-200">
                       <UserCheck size={14} />分配团队
                     </button>
                   )}
-                  {(req.status === 'assigned' || req.status === 'processing' || req.status === 'overdue') && (
-                    <button onClick={(e) => { e.stopPropagation(); setShowComplete(req.id); setResultInput('') }} className="flex items-center gap-1 px-3 py-1.5 bg-accent-100 text-accent-700 rounded-lg text-sm font-medium hover:bg-accent-200">
+                  {(req.status === 'assigned' || req.status === 'overdue') && (
+                    <button onClick={(e) => { e.stopPropagation(); handleStartProcessing(req.id) }} className="flex items-center gap-1 px-3 py-1.5 bg-warning-100 text-warning-700 rounded-lg text-sm font-medium hover:bg-warning-200">
+                      <Play size={14} />开始处理
+                    </button>
+                  )}
+                  {(req.status === 'assigned' || req.status === 'overdue') && (
+                    <button onClick={(e) => { e.stopPropagation(); setShowAssign(req.id) }} className="flex items-center gap-1 px-3 py-1.5 border border-gray-300 text-gray-600 rounded-lg text-sm font-medium hover:bg-gray-100">
+                      <UserCheck size={14} />更换团队
+                    </button>
+                  )}
+                  {(req.status === 'processing' || req.status === 'overdue') && (
+                    <button onClick={(e) => { e.stopPropagation(); openCompleteModal(req.id) }} className="flex items-center gap-1 px-3 py-1.5 bg-accent-100 text-accent-700 rounded-lg text-sm font-medium hover:bg-accent-200">
                       <CheckCircle size={14} />完成处理
                     </button>
                   )}
@@ -146,17 +180,19 @@ export default function SubjectRequests() {
 
                 {showComplete === req.id && (
                   <div className="bg-white rounded-lg p-4 mb-3 border border-gray-200">
-                    <label className="block text-sm font-medium text-gray-700 mb-2">处理结果说明</label>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">处理结果说明（必填）</label>
                     <textarea
                       value={resultInput}
-                      onChange={(e) => setResultInput(e.target.value)}
+                      onChange={(e) => { setResultInput(e.target.value); setResultError('') }}
                       placeholder={`请填写${typeLabel(req.request_type)}请求的处理结果，如：已提供数据副本 / 已删除全部相关数据 / 已导出可携格式数据...`}
                       rows={3}
-                      className="w-full px-3 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-primary-300 focus:outline-none resize-none mb-3"
+                      required
+                      className={`w-full px-3 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-primary-300 focus:outline-none resize-none mb-2 ${resultError ? 'border-critical-400' : ''}`}
                     />
+                    {resultError && <p className="text-critical-600 text-xs mb-3">{resultError}</p>}
                     <div className="flex items-center gap-2">
                       <button onClick={() => handleComplete(req.id)} className="px-4 py-2 bg-accent-600 text-white rounded-lg text-sm hover:bg-accent-700">确认完成</button>
-                      <button onClick={() => { setShowComplete(null); setResultInput('') }} className="px-4 py-2 border rounded-lg text-sm hover:bg-gray-100">取消</button>
+                      <button onClick={() => { setShowComplete(null); setResultInput(''); setResultError('') }} className="px-4 py-2 border rounded-lg text-sm hover:bg-gray-100">取消</button>
                     </div>
                   </div>
                 )}

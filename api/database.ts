@@ -10,6 +10,14 @@ const db = new Database(path.join(__dirname, 'privacyguard.db'))
 db.pragma('journal_mode = WAL')
 db.pragma('foreign_keys = ON')
 
+try {
+  db.prepare('ALTER TABLE withdrawal_tasks ADD COLUMN remark TEXT').run()
+} catch (e) {}
+
+try {
+  db.prepare('ALTER TABLE subject_requests ADD COLUMN was_overdue INTEGER NOT NULL DEFAULT 0').run()
+} catch (e) {}
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS data_assets (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -45,6 +53,7 @@ db.exec(`
     consent_record_id INTEGER NOT NULL,
     data_asset_id INTEGER NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending',
+    remark TEXT,
     completed_at TEXT,
     FOREIGN KEY (consent_record_id) REFERENCES consent_records(id),
     FOREIGN KEY (data_asset_id) REFERENCES data_assets(id)

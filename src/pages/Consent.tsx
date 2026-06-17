@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Plus, X } from 'lucide-react'
+import { Plus, X, ChevronDown, ChevronUp, Search } from 'lucide-react'
 import { useAppStore, type ConsentVersion, type ConsentRecord, type WithdrawalTask, type DataAsset } from '@/stores/appStore'
 import StatusBadge from '@/components/StatusBadge'
 
@@ -13,12 +13,32 @@ export default function Consent() {
     createConsentVersion, createConsentRecord, withdrawConsent, updateWithdrawalTask,
   } = useAppStore()
 
+  const [statusFilter, setStatusFilter] = useState('all')
+  const [versionFilter, setVersionFilter] = useState<number | 'all'>('all')
+  const [emailFilter, setEmailFilter] = useState('')
+  const [searchApplied, setSearchApplied] = useState<{ status: string; version: number | 'all'; email: string }>({ status: 'all', version: 'all', email: '' })
+
+  const applyFilters = () => {
+    setSearchApplied({ status: statusFilter, version: versionFilter, email: emailFilter })
+  }
+
+  const refreshWithFilters = () => {
+    fetchConsentRecords({
+      status: searchApplied.status === 'all' ? undefined : searchApplied.status,
+      version_id: searchApplied.version === 'all' ? undefined : searchApplied.version,
+      email: searchApplied.email || undefined,
+    })
+  }
+
   useEffect(() => {
     fetchConsentVersions()
-    fetchConsentRecords()
-    fetchWithdrawalTasks()
     fetchDataAssets()
+    fetchWithdrawalTasks()
   }, [])
+
+  useEffect(() => {
+    refreshWithFilters()
+  }, [searchApplied.status, searchApplied.version, searchApplied.email])
 
   const tabs: { key: TabKey; label: string }[] = [
     { key: 'versions', label: '同意版本' },
@@ -41,7 +61,21 @@ export default function Consent() {
       </div>
 
       {activeTab === 'versions' && <VersionsTab versions={consentVersions} onCreate={createConsentVersion} />}
-      {activeTab === 'records' && <RecordsTab records={consentRecords} versions={consentVersions} onCreate={createConsentRecord} onWithdraw={withdrawConsent} />}
+      {activeTab === 'records' && (
+        <RecordsTab
+          records={consentRecords}
+          versions={consentVersions}
+          statusFilter={statusFilter}
+          versionFilter={versionFilter}
+          emailFilter={emailFilter}
+          setStatusFilter={setStatusFilter}
+          setVersionFilter={setVersionFilter}
+          setEmailFilter={setEmailFilter}
+          applyFilters={applyFilters}
+          onCreate={(d) => createConsentRecord(d).then(() => refreshWithFilters())}
+          onWithdraw={(id) => withdrawConsent(id).then(() => refreshWithFilters())}
+        />
+      )}
       {activeTab === 'withdrawals' && <WithdrawalsTab tasks={withdrawalTasks} assets={dataAssets} onUpdate={updateWithdrawalTask} />}
     </div>
   )
@@ -118,8 +152,22 @@ function VersionsTab({ versions, onCreate }: { versions: ConsentVersion[]; onCre
   )
 }
 
-function RecordsTab({ records, versions, onCreate, onWithdraw }: { records: ConsentRecord[]; versions: ConsentVersion[]; onCreate: (d: { consent_version_id: number; subject_name: string; subject_email: string }) => Promise<void>; onWithdraw: (id: number) => Promise<void> }) {
+function RecordsTab({ records, versions, statusFilter, versionFilter, emailFilter, setStatusFilter, setVersionFilter, setEmailFilter, applyFilters, onCreate, onWithdraw }: {
+  records: ConsentRecord[]
+  versions: ConsentVersion[]
+  statusFilter: string
+  versionFilter: number | 'all'
+  emailFilter: string
+  setStatusFilter: (s: string) => void
+  setVersionFilter: (v: number | 'all') => void
+  setEmailFilter: (s: string) => void
+  applyFilters: () => void
+  onCreate: (d: { consent_version_id: number; subject_name: string; subject_email: string }) => Promise<void>
+  onWithdraw: (id: number) => Promise<void>
+}) {
   const [showModal, setShowModal] = useState(false)
+  const [expandedId, setExpandedId] = useState<number | null>(null)
+  const [recordTasks, setRecordTasks] = useState<WithdrawalTask[]>([])
   const currentVersion = versions.find((v) => v.is_current)
   const [form, setForm] = useState({ consent_version_id: 0, subject_name: '', subject_email: '' })
 
@@ -128,8 +176,33 @@ function RecordsTab({ records, versions, onCreate, onWithdraw }: { records: Cons
     return v ? `v${v.version}` : `#${versionId}`
   }
 
-  const isWithdrawn = (r: ConsentRecord) => {
-    return !!r.withdrawn_at
+  const isWithdrawn = (r: ConsentRecord) => !!r.withdrawn_at
+
+  const handleExpand = async (id: number, alreadyWithdrawn: boolean) => {
+    if (!alreadyWithdrawn) {
+      setExpandedId(expandedId === id ? null : id)
+      return
+    }
+    if (expandedId === id) {
+      setExpandedId(null)
+    } else {
+      try {
+        const res = await fetch(`/api/consent/records/${id}/tasks`)
+        const json = await res.json()
+        if (json.success) {
+          setRecordTasks(json.data)
+        }
+        setExpandedId(id)
+      } catch {
+        setExpandedId(id)
+      }
+    }
+  }
+
+  const statusLabel = (s: string) => ({ pending: '待处理', processing: '处理中', completed: '已完成' }[s] || s)
+  const statusVariant = (s: string): 'success' | 'warning' | 'danger' | 'info' | 'neutral' => {
+    const map: Record<string, 'success' | 'warning' | 'danger' | 'info' | 'neutral'> = { pending: 'neutral', processing: 'warning', completed: 'success' }
+    return map[s] || 'neutral'
   }
 
   const handleCreate = async (e: React.FormEvent) => {
@@ -151,7 +224,43 @@ function RecordsTab({ records, versions, onCreate, onWithdraw }: { records: Cons
 
   return (
     <>
-      <div className="flex justify-end">
+      <div className="flex flex-col sm:flex-row gap-3 justify-between items-stretch sm:items-center">
+        <div className="flex flex-wrap gap-2 items-center">
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && applyFilters()}
+            className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-primary-300 focus:outline-none"
+          >
+            <option value="all">全部状态</option>
+            <option value="granted">已同意</option>
+            <option value="withdrawn">已撤回</option>
+          </select>
+          <select
+            value={versionFilter}
+            onChange={(e) => setVersionFilter(e.target.value === 'all' ? 'all' : Number(e.target.value))}
+            onKeyDown={(e) => e.key === 'Enter' && applyFilters()}
+            className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-primary-300 focus:outline-none"
+          >
+            <option value="all">全部版本</option>
+            {versions.map((v) => (
+              <option key={v.id} value={v.id}>v{v.version}{v.is_current ? '（当前）' : ''}</option>
+            ))}
+          </select>
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={emailFilter}
+              onChange={(e) => setEmailFilter(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && applyFilters()}
+              placeholder="邮箱搜索"
+              className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-primary-300 focus:outline-none w-44"
+            />
+            <button onClick={applyFilters} className="flex items-center gap-1 px-3 py-2 bg-primary-100 text-primary-700 rounded-lg text-sm font-medium hover:bg-primary-200">
+              <Search size={14} />筛选
+            </button>
+          </div>
+        </div>
         <button onClick={openCreateModal} className="flex items-center gap-2 px-4 py-2.5 bg-primary-800 text-white rounded-lg hover:bg-primary-700 text-sm font-medium">
           <Plus size={18} />新增同意记录
         </button>
@@ -162,6 +271,7 @@ function RecordsTab({ records, versions, onCreate, onWithdraw }: { records: Cons
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-gray-50 border-b border-gray-200">
+                <th className="px-4 py-3 text-left font-medium text-gray-600 w-8"></th>
                 <th className="px-4 py-3 text-left font-medium text-gray-600">主体名称</th>
                 <th className="px-4 py-3 text-left font-medium text-gray-600">邮箱</th>
                 <th className="px-4 py-3 text-left font-medium text-gray-600">版本</th>
@@ -173,24 +283,56 @@ function RecordsTab({ records, versions, onCreate, onWithdraw }: { records: Cons
             </thead>
             <tbody>
               {records.map((r) => (
-                <tr key={r.id} className="border-b border-gray-100 hover:bg-gray-50">
-                  <td className="px-4 py-3 font-medium text-gray-800">{r.subject_name}</td>
-                  <td className="px-4 py-3 text-gray-600">{r.subject_email}</td>
-                  <td className="px-4 py-3 text-gray-600">{r.consent_version ? `v${r.consent_version}` : getVersionLabel(r.consent_version_id)}</td>
-                  <td className="px-4 py-3">
-                    <StatusBadge label={isWithdrawn(r) ? '已撤回' : '已同意'} variant={isWithdrawn(r) ? 'danger' : 'success'} />
-                  </td>
-                  <td className="px-4 py-3 text-gray-600">{new Date(r.granted_at).toLocaleString('zh-CN')}</td>
-                  <td className="px-4 py-3 text-gray-600">{r.withdrawn_at ? new Date(r.withdrawn_at).toLocaleString('zh-CN') : '-'}</td>
-                  <td className="px-4 py-3">
-                    {!isWithdrawn(r) && (
-                      <button onClick={() => onWithdraw(r.id)} className="text-critical-500 hover:text-critical-700 text-sm font-medium">撤回</button>
-                    )}
-                  </td>
-                </tr>
+                <>
+                  <tr key={r.id} className={`border-b border-gray-100 hover:bg-gray-50 ${expandedId === r.id ? 'bg-gray-50' : ''}`}>
+                    <td className="px-4 py-3">
+                      {isWithdrawn(r) && (
+                        <button onClick={(e) => { e.stopPropagation(); handleExpand(r.id, true) }} className="p-1 hover:bg-gray-200 rounded">
+                          {expandedId === r.id ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                        </button>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 font-medium text-gray-800">{r.subject_name}</td>
+                    <td className="px-4 py-3 text-gray-600">{r.subject_email}</td>
+                    <td className="px-4 py-3 text-gray-600">{r.consent_version ? `v${r.consent_version}` : getVersionLabel(r.consent_version_id)}</td>
+                    <td className="px-4 py-3">
+                      <StatusBadge label={isWithdrawn(r) ? '已撤回' : '已同意'} variant={isWithdrawn(r) ? 'danger' : 'success'} />
+                    </td>
+                    <td className="px-4 py-3 text-gray-600">{new Date(r.granted_at).toLocaleString('zh-CN')}</td>
+                    <td className="px-4 py-3 text-gray-600">{r.withdrawn_at ? new Date(r.withdrawn_at).toLocaleString('zh-CN') : '-'}</td>
+                    <td className="px-4 py-3">
+                      {!isWithdrawn(r) && (
+                        <button onClick={() => onWithdraw(r.id)} className="text-critical-500 hover:text-critical-700 text-sm font-medium">撤回</button>
+                      )}
+                    </td>
+                  </tr>
+                  {expandedId === r.id && isWithdrawn(r) && (
+                    <tr key={`${r.id}-detail`} className="bg-gray-50 border-b border-gray-100">
+                      <td colSpan={8} className="px-8 py-4">
+                        <h5 className="text-sm font-medium text-gray-700 mb-2">关联系统停用情况</h5>
+                        {recordTasks.length === 0 ? (
+                          <p className="text-sm text-gray-400">暂无关联任务</p>
+                        ) : (
+                          <div className="grid gap-2">
+                            {recordTasks.map((t) => (
+                              <div key={t.id} className="flex items-center justify-between bg-white border border-gray-200 rounded-lg px-4 py-3">
+                                <div className="flex items-center gap-3">
+                                  <StatusBadge label={statusLabel(t.status)} variant={statusVariant(t.status)} />
+                                  <span className="text-sm font-medium text-gray-800">{(t as any).system_name || `资产 #${t.data_asset_id}`}</span>
+                                  {t.remark && <span className="text-xs text-gray-500 bg-gray-100 px-2 py-0.5 rounded">{t.remark}</span>}
+                                </div>
+                                <span className="text-xs text-gray-500">{t.completed_at ? `完成于 ${new Date(t.completed_at).toLocaleString('zh-CN')}` : '未完成'}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  )}
+                </>
               ))}
               {records.length === 0 && (
-                <tr><td colSpan={7} className="px-4 py-8 text-center text-gray-400">暂无同意记录</td></tr>
+                <tr><td colSpan={8} className="px-4 py-8 text-center text-gray-400">暂无同意记录</td></tr>
               )}
             </tbody>
           </table>
@@ -242,6 +384,9 @@ function RecordsTab({ records, versions, onCreate, onWithdraw }: { records: Cons
 }
 
 function WithdrawalsTab({ tasks, assets, onUpdate }: { tasks: WithdrawalTask[]; assets: DataAsset[]; onUpdate: (id: number, d: any) => Promise<void> }) {
+  const [editId, setEditId] = useState<number | null>(null)
+  const [editRemark, setEditRemark] = useState('')
+
   const getAssetName = (assetId: number) => {
     const a = assets.find((a) => a.id === assetId)
     return a ? a.system_name : `#${assetId}`
@@ -252,49 +397,122 @@ function WithdrawalsTab({ tasks, assets, onUpdate }: { tasks: WithdrawalTask[]; 
     return map[s] || 'neutral'
   }
 
-  const statusLabel = (s: string) => {
-    const map: Record<string, string> = { pending: '待处理', processing: '处理中', completed: '已完成' }
-    return map[s] || s
+  const statusLabel = (s: string) => ({ pending: '待处理', processing: '处理中', completed: '已完成' }[s] || s)
+
+  const openEdit = (task: WithdrawalTask) => {
+    setEditId(task.id)
+    setEditRemark(task.remark || '')
+  }
+
+  const handleStartProcessing = async (id: number) => {
+    await onUpdate(id, { status: 'processing', remark: editRemark || undefined })
+    setEditId(null)
+    setEditRemark('')
+  }
+
+  const handleComplete = async (id: number) => {
+    await onUpdate(id, { status: 'completed', remark: editRemark, completed_at: new Date().toISOString() })
+    setEditId(null)
+    setEditRemark('')
+  }
+
+  const groupedByRecord: Record<number, WithdrawalTask[]> = {}
+  for (const t of tasks) {
+    if (!groupedByRecord[t.consent_record_id]) groupedByRecord[t.consent_record_id] = []
+    groupedByRecord[t.consent_record_id].push(t)
+  }
+
+  const recordHeaders: Record<number, { name: string; email: string; withdrawnAt: string }> = {}
+  for (const t of tasks) {
+    if (!recordHeaders[t.consent_record_id]) {
+      recordHeaders[t.consent_record_id] = {
+        name: (t as any).subject_name || `#${t.consent_record_id}`,
+        email: (t as any).subject_email || '',
+        withdrawnAt: (t as any).withdrawn_at || '',
+      }
+    }
   }
 
   return (
-    <div className="bg-white rounded-xl card-shadow-md overflow-hidden">
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="bg-gray-50 border-b border-gray-200">
-              <th className="px-4 py-3 text-left font-medium text-gray-600">同意记录ID</th>
-              <th className="px-4 py-3 text-left font-medium text-gray-600">关联系统</th>
-              <th className="px-4 py-3 text-left font-medium text-gray-600">状态</th>
-              <th className="px-4 py-3 text-left font-medium text-gray-600">完成时间</th>
-              <th className="px-4 py-3 text-left font-medium text-gray-600">操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            {tasks.map((t) => (
-              <tr key={t.id} className="border-b border-gray-100 hover:bg-gray-50">
-                <td className="px-4 py-3 text-gray-800">#{t.consent_record_id}</td>
-                <td className="px-4 py-3 text-gray-600">{getAssetName(t.data_asset_id)}</td>
-                <td className="px-4 py-3"><StatusBadge label={statusLabel(t.status)} variant={statusVariant(t.status)} /></td>
-                <td className="px-4 py-3 text-gray-600">{t.completed_at ? new Date(t.completed_at).toLocaleDateString('zh-CN') : '-'}</td>
-                <td className="px-4 py-3">
-                  <div className="flex gap-2">
-                    {t.status === 'pending' && (
-                      <button onClick={() => onUpdate(t.id, { status: 'processing' })} className="text-warning-600 hover:text-warning-700 text-sm font-medium">标记处理中</button>
-                    )}
-                    {t.status === 'processing' && (
-                      <button onClick={() => onUpdate(t.id, { status: 'completed', completed_at: new Date().toISOString() })} className="text-accent-600 hover:text-accent-700 text-sm font-medium">标记完成</button>
-                    )}
-                  </div>
-                </td>
-              </tr>
-            ))}
-            {tasks.length === 0 && (
-              <tr><td colSpan={5} className="px-4 py-8 text-center text-gray-400">暂无撤回任务</td></tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+    <div className="space-y-4">
+      {Object.keys(groupedByRecord).map((rid) => {
+        const id = Number(rid)
+        const header = recordHeaders[id]
+        const ts = groupedByRecord[id]
+        const total = ts.length
+        const done = ts.filter((t) => t.status === 'completed').length
+        const allDone = total > 0 && done === total
+        return (
+          <div key={id} className="bg-white rounded-xl card-shadow-md overflow-hidden">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100 bg-gray-50">
+              <div>
+                <div className="font-medium text-primary-800">{header?.name || `记录 #${id}`}</div>
+                <div className="text-xs text-gray-500">{header?.email} {header?.withdrawnAt && `· 撤回时间：${new Date(header.withdrawnAt).toLocaleString('zh-CN')}`}</div>
+              </div>
+              <div className="text-sm">
+                <StatusBadge label={`停用进度 ${done}/${total}`} variant={allDone ? 'success' : 'warning'} />
+              </div>
+            </div>
+            <div className="p-0">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-white border-b border-gray-200">
+                    <th className="px-5 py-3 text-left font-medium text-gray-600 w-1/3">关联系统</th>
+                    <th className="px-5 py-3 text-left font-medium text-gray-600 w-1/6">状态</th>
+                    <th className="px-5 py-3 text-left font-medium text-gray-600">处理备注</th>
+                    <th className="px-5 py-3 text-left font-medium text-gray-600 w-1/5">完成时间</th>
+                    <th className="px-5 py-3 text-left font-medium text-gray-600 w-1/5">操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {ts.map((t) => (
+                    <tr key={t.id} className="border-b border-gray-100 hover:bg-gray-50 last:border-0">
+                      <td className="px-5 py-3 font-medium text-gray-800">{getAssetName(t.data_asset_id)}</td>
+                      <td className="px-5 py-3"><StatusBadge label={statusLabel(t.status)} variant={statusVariant(t.status)} /></td>
+                      <td className="px-5 py-3">
+                        {editId === t.id ? (
+                          <input
+                            value={editRemark}
+                            onChange={(e) => setEditRemark(e.target.value)}
+                            placeholder="填写处理备注，如'已停止邮件推送'"
+                            className="w-full px-2 py-1 border rounded text-sm focus:ring-2 focus:ring-primary-300 focus:outline-none"
+                          />
+                        ) : (
+                          <span className="text-gray-600">{t.remark || '-'}</span>
+                        )}
+                      </td>
+                      <td className="px-5 py-3 text-gray-600">{t.completed_at ? new Date(t.completed_at).toLocaleString('zh-CN') : '-'}</td>
+                      <td className="px-5 py-3">
+                        {editId === t.id ? (
+                          <div className="flex gap-2">
+                            {t.status === 'pending' && (
+                              <button onClick={() => handleStartProcessing(t.id)} className="text-warning-600 hover:text-warning-700 text-sm font-medium">确认开始</button>
+                            )}
+                            {t.status === 'processing' && (
+                              <button onClick={() => handleComplete(t.id)} className="text-accent-600 hover:text-accent-700 text-sm font-medium">确认完成</button>
+                            )}
+                            <button onClick={() => { setEditId(null); setEditRemark('') }} className="text-gray-500 hover:text-gray-700 text-sm">取消</button>
+                          </div>
+                        ) : (
+                          <div className="flex gap-2">
+                            {t.status === 'pending' && (
+                              <button onClick={() => openEdit(t)} className="text-warning-600 hover:text-warning-700 text-sm font-medium">开始处理</button>
+                            )}
+                            {t.status === 'processing' && (
+                              <button onClick={() => openEdit(t)} className="text-accent-600 hover:text-accent-700 text-sm font-medium">标记完成</button>
+                            )}
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )
+      })}
+      {tasks.length === 0 && <p className="text-center text-gray-400 py-8 bg-white rounded-xl">暂无撤回任务</p>}
     </div>
   )
 }

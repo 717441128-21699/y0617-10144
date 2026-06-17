@@ -26,16 +26,33 @@ router.post('/versions', (req: Request, res: Response) => {
 
 router.get('/records', (req: Request, res: Response) => {
   const search = req.query.search as string | undefined
-  let rows: any[]
+  const status = req.query.status as string | undefined
+  const versionId = req.query.version_id as string | undefined
+  const email = req.query.email as string | undefined
+
+  let sql = `SELECT cr.*, cv.version as consent_version FROM consent_records cr LEFT JOIN consent_versions cv ON cr.consent_version_id = cv.id WHERE 1=1`
+  const params: any[] = []
+
   if (search) {
-    rows = db.prepare(
-      `SELECT cr.*, cv.version as consent_version FROM consent_records cr LEFT JOIN consent_versions cv ON cr.consent_version_id = cv.id WHERE cr.subject_name LIKE ? OR cr.subject_email LIKE ?`
-    ).all(`%${search}%`, `%${search}%`)
-  } else {
-    rows = db.prepare(
-      `SELECT cr.*, cv.version as consent_version FROM consent_records cr LEFT JOIN consent_versions cv ON cr.consent_version_id = cv.id`
-    ).all()
+    sql += ' AND (cr.subject_name LIKE ? OR cr.subject_email LIKE ?)'
+    params.push(`%${search}%`, `%${search}%`)
   }
+  if (status === 'granted') {
+    sql += ' AND cr.withdrawn_at IS NULL'
+  } else if (status === 'withdrawn') {
+    sql += ' AND cr.withdrawn_at IS NOT NULL'
+  }
+  if (versionId) {
+    sql += ' AND cr.consent_version_id = ?'
+    params.push(versionId)
+  }
+  if (email) {
+    sql += ' AND cr.subject_email LIKE ?'
+    params.push(`%${email}%`)
+  }
+  sql += ' ORDER BY cr.granted_at DESC'
+
+  const rows = db.prepare(sql).all(...params)
   res.json({ success: true, data: rows })
 })
 
@@ -62,24 +79,35 @@ router.post('/records/:id/withdraw', (req: Request, res: Response) => {
     res.status(404).json({ success: false, error: '同意记录不存在' })
     return
   }
-  if (!record.is_granted) {
+  if (!record.is_granted || record.withdrawn_at) {
     res.status(400).json({ success: false, error: '该同意已撤回' })
     return
   }
   const now = new Date().toISOString()
   db.prepare('UPDATE consent_records SET is_granted = 0, withdrawn_at = ? WHERE id = ?').run(now, id)
 
-  const assets = db.prepare('SELECT id FROM data_assets').all() as any[]
-  const insertTask = db.prepare(
-    `INSERT INTO withdrawal_tasks (consent_record_id, data_asset_id, status, completed_at) VALUES (?, ?, 'pending', NULL)`
-  )
-  const insertMany = db.transaction((items: any[]) => {
-    for (const item of items) insertTask.run(id, item.id)
-  })
-  insertMany(assets)
+  const existingTasks = db.prepare('SELECT COUNT(*) as count FROM withdrawal_tasks WHERE consent_record_id = ?').get(id) as any
+  if (existingTasks.count === 0) {
+    const assets = db.prepare('SELECT id FROM data_assets').all() as any[]
+    const insertTask = db.prepare(
+      `INSERT INTO withdrawal_tasks (consent_record_id, data_asset_id, status, remark, completed_at) VALUES (?, ?, 'pending', NULL, NULL)`
+    )
+    const insertMany = db.transaction((items: any[]) => {
+      for (const item of items) insertTask.run(id, item.id)
+    })
+    insertMany(assets)
+  }
 
   const row = db.prepare('SELECT * FROM consent_records WHERE id = ?').get(id)
   res.json({ success: true, data: row })
+})
+
+router.get('/records/:id/tasks', (req: Request, res: Response) => {
+  const id = Number(req.params.id)
+  const rows = db.prepare(
+    `SELECT wt.*, da.system_name, da.data_type FROM withdrawal_tasks wt LEFT JOIN data_assets da ON wt.data_asset_id = da.id WHERE wt.consent_record_id = ? ORDER BY wt.id ASC`
+  ).all(id)
+  res.json({ success: true, data: rows })
 })
 
 router.get('/withdrawal-tasks', (req: Request, res: Response) => {
@@ -96,13 +124,23 @@ router.put('/withdrawal-tasks/:id', (req: Request, res: Response) => {
     res.status(404).json({ success: false, error: '撤回任务不存在' })
     return
   }
-  const { status } = req.body as { status: string }
-  if (!status || !['pending', 'processing', 'completed'].includes(status)) {
+  const { status, remark } = req.body as { status?: string; remark?: string }
+  if (status && !['pending', 'processing', 'completed'].includes(status)) {
     res.status(400).json({ success: false, error: '状态必须为 pending/processing/completed' })
     return
   }
-  const completedAt = status === 'completed' ? new Date().toISOString() : null
-  db.prepare('UPDATE withdrawal_tasks SET status = ?, completed_at = COALESCE(?, completed_at) WHERE id = ?').run(status, completedAt, id)
+  const finalStatus = status ?? existing.status
+  const completedAt = finalStatus === 'completed' ? new Date().toISOString() : (status === 'completed' ? new Date().toISOString() : existing.completed_at)
+  const finalCompletedAt = finalStatus === 'completed' ? completedAt : existing.completed_at
+
+  if (status !== undefined && remark !== undefined) {
+    db.prepare('UPDATE withdrawal_tasks SET status = ?, remark = ?, completed_at = ? WHERE id = ?').run(finalStatus, remark, finalCompletedAt, id)
+  } else if (status !== undefined) {
+    db.prepare('UPDATE withdrawal_tasks SET status = ?, completed_at = ? WHERE id = ?').run(finalStatus, finalCompletedAt, id)
+  } else if (remark !== undefined) {
+    db.prepare('UPDATE withdrawal_tasks SET remark = ? WHERE id = ?').run(remark, id)
+  }
+
   const row = db.prepare('SELECT * FROM withdrawal_tasks WHERE id = ?').get(id)
   res.json({ success: true, data: row })
 })

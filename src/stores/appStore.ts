@@ -37,8 +37,13 @@ export interface WithdrawalTask {
   consent_record_id: number
   data_asset_id: number
   status: 'pending' | 'processing' | 'completed'
+  remark: string | null
   completed_at: string | null
   data_asset?: DataAsset
+  system_name?: string
+  data_type?: string
+  subject_name?: string
+  subject_email?: string
 }
 
 export interface SubjectRequest {
@@ -52,6 +57,7 @@ export interface SubjectRequest {
   deadline: string
   created_at: string
   completed_at: string | null
+  was_overdue?: boolean | number
 }
 
 export interface RequestTimeline {
@@ -117,7 +123,7 @@ interface AppState {
   fetchConsentVersions: () => Promise<void>
   createConsentVersion: (data: Omit<ConsentVersion, 'id' | 'created_at'>) => Promise<void>
 
-  fetchConsentRecords: () => Promise<void>
+  fetchConsentRecords: (filters?: { status?: string; version_id?: number; email?: string }) => Promise<void>
   createConsentRecord: (data: { consent_version_id: number; subject_name: string; subject_email: string }) => Promise<void>
   withdrawConsent: (id: number) => Promise<void>
 
@@ -128,6 +134,7 @@ interface AppState {
   createSubjectRequest: (data: Omit<SubjectRequest, 'id' | 'created_at' | 'completed_at'>) => Promise<void>
   updateSubjectRequest: (id: number, data: Partial<SubjectRequest>) => Promise<void>
   assignTeam: (id: number, team: string) => Promise<void>
+  startProcessing: (id: number) => Promise<void>
   completeRequest: (id: number, result: string) => Promise<void>
 
   fetchRequestTimeline: (requestId: number) => Promise<void>
@@ -140,6 +147,7 @@ interface AppState {
   addBreachNotification: (breachId: number, data: Omit<BreachNotification, 'id' | 'breach_event_id'>) => Promise<void>
 
   fetchDashboardStats: () => Promise<void>
+  fetchAuditSummary: () => Promise<string>
 }
 
 async function apiFetch<T>(url: string, options?: RequestInit): Promise<T> {
@@ -204,10 +212,15 @@ export const useAppStore = create<AppState>((set, get) => ({
     await get().fetchConsentVersions()
   },
 
-  fetchConsentRecords: async () => {
+  fetchConsentRecords: async (filters) => {
     set((s) => ({ loading: { ...s.loading, consentRecords: true } }))
     try {
-      const data = await apiFetch<ConsentRecord[]>('/api/consent/records')
+      const params = new URLSearchParams()
+      if (filters?.status) params.append('status', filters.status)
+      if (filters?.version_id) params.append('version_id', String(filters.version_id))
+      if (filters?.email) params.append('email', filters.email)
+      const qs = params.toString() ? `?${params.toString()}` : ''
+      const data = await apiFetch<ConsentRecord[]>(`/api/consent/records${qs}`)
       set({ consentRecords: data })
     } finally {
       set((s) => ({ loading: { ...s.loading, consentRecords: false } }))
@@ -265,6 +278,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     await get().fetchSubjectRequests()
   },
 
+  startProcessing: async (id) => {
+    await apiFetch(`/api/subject-requests/${id}/start`, { method: 'POST' })
+    await get().fetchSubjectRequests()
+  },
+
   completeRequest: async (id, result) => {
     await apiFetch(`/api/subject-requests/${id}/complete`, { method: 'POST', body: JSON.stringify({ result }) })
     await get().fetchSubjectRequests()
@@ -317,5 +335,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     } finally {
       set((s) => ({ loading: { ...s.loading, dashboard: false } }))
     }
+  },
+
+  fetchAuditSummary: async () => {
+    const data = await apiFetch<{ text: string; generated_at: string }>('/api/audit/summary')
+    return data.text
   },
 }))

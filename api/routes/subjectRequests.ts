@@ -3,14 +3,31 @@ import db from '../database.js'
 
 const router = Router()
 
+const typeLabels: Record<string, string> = { access: '访问', deletion: '删除', export: '导出' }
+
 router.get('/', (req: Request, res: Response) => {
   const status = req.query.status as string | undefined
   const type = req.query.type as string | undefined
 
   const now = new Date().toISOString()
-  db.prepare(
-    `UPDATE subject_requests SET status = 'overdue' WHERE status IN ('pending', 'assigned', 'processing') AND deadline < ?`
-  ).run(now)
+  const overdueStmt = db.prepare(
+    `UPDATE subject_requests SET status = 'overdue', was_overdue = 1 WHERE status IN ('pending', 'assigned', 'processing') AND deadline < ?`
+  )
+  const overdueResult = overdueStmt.run(now)
+  db.prepare(`UPDATE subject_requests SET was_overdue = 1 WHERE status = 'overdue' AND was_overdue = 0`).run()
+
+  if (overdueResult.changes > 0) {
+    const overdueIds = db.prepare(
+      `SELECT id FROM subject_requests WHERE status = 'overdue' AND was_overdue = 1 AND created_at > ?`
+    ).all(new Date(Date.now() - 3600 * 1000).toISOString()) as any[]
+    const insertTimeline = db.prepare(
+      `INSERT INTO request_timeline (subject_request_id, action, performed_by, performed_at) VALUES (?, ?, ?, ?)`
+    )
+    const insertMany = db.transaction((ids: any[]) => {
+      for (const row of ids) insertTimeline.run(row.id, '请求已超期，系统自动标记', '系统', now)
+    })
+    insertMany(overdueIds)
+  }
 
   let rows: any[]
   let sql = 'SELECT * FROM subject_requests WHERE 1=1'
@@ -44,7 +61,7 @@ router.post('/', (req: Request, res: Response) => {
   const initialStatus = assigned_team ? 'assigned' : 'pending'
 
   const result = db.prepare(
-    `INSERT INTO subject_requests (request_type, subject_name, subject_email, description, status, assigned_team, deadline, created_at, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)`
+    `INSERT INTO subject_requests (request_type, subject_name, subject_email, description, status, assigned_team, deadline, created_at, completed_at, was_overdue) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 0)`
   ).run(request_type, subject_name, subject_email, description ?? null, initialStatus, assigned_team ?? null, deadline, createdAt)
 
   db.prepare(
@@ -106,6 +123,29 @@ router.post('/:id/assign', (req: Request, res: Response) => {
   res.json({ success: true, data: row })
 })
 
+router.post('/:id/start', (req: Request, res: Response) => {
+  const id = Number(req.params.id)
+  const existing = db.prepare('SELECT * FROM subject_requests WHERE id = ?').get(id) as any
+  if (!existing) {
+    res.status(404).json({ success: false, error: '请求不存在' })
+    return
+  }
+  if (!existing.assigned_team) {
+    res.status(400).json({ success: false, error: '请先分配处理团队' })
+    return
+  }
+  const now = new Date().toISOString()
+  db.prepare(`UPDATE subject_requests SET status = ? WHERE id = ?`).run('processing', id)
+
+  const typeLabel = typeLabels[existing.request_type] || existing.request_type
+  db.prepare(
+    `INSERT INTO request_timeline (subject_request_id, action, performed_by, performed_at) VALUES (?, ?, ?, ?)`
+  ).run(id, `开始处理${typeLabel}请求`, existing.assigned_team, now)
+
+  const row = db.prepare('SELECT * FROM subject_requests WHERE id = ?').get(id)
+  res.json({ success: true, data: row })
+})
+
 router.post('/:id/complete', (req: Request, res: Response) => {
   const id = Number(req.params.id)
   const existing = db.prepare('SELECT * FROM subject_requests WHERE id = ?').get(id) as any
@@ -114,19 +154,21 @@ router.post('/:id/complete', (req: Request, res: Response) => {
     return
   }
   const { result } = req.body as { result?: string }
+  if (!result || !result.trim()) {
+    res.status(400).json({ success: false, error: '处理结论为必填' })
+    return
+  }
   const now = new Date().toISOString()
+  const team = existing.assigned_team || '系统管理员'
   db.prepare('UPDATE subject_requests SET status = ?, completed_at = ? WHERE id = ?')
     .run('completed', now, id)
 
-  const typeLabels: Record<string, string> = { access: '访问', deletion: '删除', export: '导出' }
   const typeLabel = typeLabels[existing.request_type] || existing.request_type
-  const actionText = result
-    ? `完成${typeLabel}请求，处理结论：${result}`
-    : `完成${typeLabel}请求`
+  const actionText = `完成${typeLabel}请求，处理团队：${team}，处理结论：${result.trim()}`
 
   db.prepare(
     `INSERT INTO request_timeline (subject_request_id, action, performed_by, performed_at) VALUES (?, ?, ?, ?)`
-  ).run(id, actionText, existing.assigned_team || '系统管理员', now)
+  ).run(id, actionText, team, now)
 
   const row = db.prepare('SELECT * FROM subject_requests WHERE id = ?').get(id)
   res.json({ success: true, data: row })
